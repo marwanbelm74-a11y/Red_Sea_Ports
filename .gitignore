@@ -1,0 +1,36 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# targets: the cache is rebuilt by tar_make()
+_targets/
+
+# Data (do not version large or confidential raw data)
+data/raw/*
+data/processed/*
+!data/**/.gitkeep
+
+# Regenerable outputs
+output/figures/*
+output/tables/*
+!output/**/.gitkeep
+
+# LaTeX
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
+paper/*.toc
+paper/main.pdf
+
+# Temporary download files
+data/raw/_part_*.csv
+
+# Paper (not published yet)
+paper/
