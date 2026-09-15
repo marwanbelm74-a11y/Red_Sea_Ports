@@ -1,146 +1,199 @@
-# Estimation. Port x week-of-year fixed effects (port-specific seasonality) and
-# week fixed effects (global shocks). Standard errors clustered by country.
+# Regressions
+# Fixed effects: port x week of year (seasonality) and week (global shocks).
+# Standard errors clustered by country.
 
-FE <- "portid^woy + week"
-
-add_post <- function(df, shock = SHOCK_DATE) {
-  post <- as.integer(df$week >= shock)
-  df$post_red <- post * df$red
-  df$post_emed <- post * df$emed
-  df$post_cape <- post * df$cape
-  df$post <- post
+add_post <- function(df, shock = shock_date) {
+  df$post      <- as.integer(df$week >= shock)
+  df$post_red  <- df$post * df$red
+  df$post_emed <- df$post * df$emed
+  df$post_cape <- df$post * df$cape
   df
 }
 
-# Event study in 4-week periods, reference = the 4 weeks before the shock.
-# The endpoints (-13, +13) bin the more distant periods.
+
 estimate_event_study <- function(panel) {
-  fixest::feols(
-    stats::as.formula(paste(
-      "log1p(calls) ~ i(rel4, red, ref = -1) + i(rel4, emed, ref = -1) +",
-      "i(rel4, cape, ref = -1) |", FE)),
-    data = main_sample(panel), cluster = ~ISO3
+  feols(
+    log1p(calls) ~ i(rel4, red, ref = -1) + i(rel4, emed, ref = -1) + i(rel4, cape, ref = -1) |
+      portid^woy + week,
+    data = main_sample(panel),
+    cluster = ~ISO3
   )
 }
 
-# Difference-in-differences and robustness checks.
+
 estimate_did <- function(panel) {
-  rhs <- paste("~ post_red + post_emed + post_cape |", FE)
-  f <- function(y) stats::as.formula(paste(y, rhs))
-  base <- add_post(main_sample(panel))
-  with_latam <- panel[panel$week < END_MAIN, ]  # Latin America added to the controls
-  list(
-    "Calls" = fixest::feols(f("log1p(calls)"), base, cluster = ~ISO3),
-    "Container" = fixest::feols(f("log1p(calls_container)"), base, cluster = ~ISO3),
-    "Volumes" = fixest::feols(f("log1p(volume)"), base, cluster = ~ISO3),
-    "Since 2022" = fixest::feols(f("log1p(calls)"),
-                                 base[base$week >= as.Date("2022-01-01"), ], cluster = ~ISO3),
-    "With Lat. Am." = fixest::feols(f("log1p(calls)"), add_post(with_latam), cluster = ~ISO3),
-    "Shock Nov. 2023" = fixest::feols(f("log1p(calls)"),
-                                      add_post(main_sample(panel), SHOCK_ALT[[1]]), cluster = ~ISO3),
-    "Shock Jan. 2024" = fixest::feols(f("log1p(calls)"),
-                                      add_post(main_sample(panel), SHOCK_ALT[[2]]), cluster = ~ISO3)
-  )
+
+  main <- add_post(main_sample(panel))
+
+  m_calls <- feols(log1p(calls) ~ post_red + post_emed + post_cape | portid^woy + week,
+                   data = main, cluster = ~ISO3)
+
+  m_container <- feols(log1p(calls_container) ~ post_red + post_emed + post_cape | portid^woy + week,
+                       data = main, cluster = ~ISO3)
+
+  m_volumes <- feols(log1p(volume) ~ post_red + post_emed + post_cape | portid^woy + week,
+                     data = main, cluster = ~ISO3)
+
+  since_2022 <- filter(main, week >= as.Date("2022-01-01"))
+  m_2022 <- feols(log1p(calls) ~ post_red + post_emed + post_cape | portid^woy + week,
+                  data = since_2022, cluster = ~ISO3)
+
+  with_latam <- add_post(filter(panel, week < end_date))
+  m_latam <- feols(log1p(calls) ~ post_red + post_emed + post_cape | portid^woy + week,
+                   data = with_latam, cluster = ~ISO3)
+
+  shock_nov <- add_post(main_sample(panel), shock = first_attacks_date)
+  m_nov <- feols(log1p(calls) ~ post_red + post_emed + post_cape | portid^woy + week,
+                 data = shock_nov, cluster = ~ISO3)
+
+  shock_jan <- add_post(main_sample(panel), shock = us_uk_strikes_date)
+  m_jan <- feols(log1p(calls) ~ post_red + post_emed + post_cape | portid^woy + week,
+                 data = shock_jan, cluster = ~ISO3)
+
+  list("Calls"           = m_calls,
+       "Container"       = m_container,
+       "Volumes"         = m_volumes,
+       "Since 2022"      = m_2022,
+       "With Lat. Am."   = m_latam,
+       "Shock Nov. 2023" = m_nov,
+       "Shock Jan. 2024" = m_jan)
 }
 
-# PortWatch <-> CPPI matching: normalised names + manual correspondences.
-CPPI_MANUAL <- c("El Sokhna" = "SOKHNA",
-                 "Las Palmas (de Gran Canaria)" = "LAS PALMAS",
-                 "Porto Da Praia" = "PRAIA")
 
-normalise_name <- function(x) {
-  x <- toupper(iconv(x, to = "ASCII//TRANSLIT"))
+# Matching PortWatch names to CPPI names
+
+cppi_name_fixes <- c("El Sokhna"                    = "SOKHNA",
+                     "Las Palmas (de Gran Canaria)" = "LAS PALMAS",
+                     "Porto Da Praia"               = "PRAIA")
+
+clean_name <- function(x) {
+  x <- iconv(x, to = "ASCII//TRANSLIT")
+  x <- toupper(x)
   x <- gsub("\\s*\\(.*\\)", "", x)
-  trimws(gsub("[^A-Z ]", " ", x)) |> gsub(pattern = "\\s+", replacement = " ")
+  x <- gsub("[^A-Z ]", " ", x)
+  x <- gsub("\\s+", " ", x)
+  trimws(x)
 }
 
 match_cppi <- function(panel, cppi) {
-  ports <- unique(panel[, c("portid", "portname", "ISO3", "group")])
-  key <- ifelse(ports$portname %in% names(CPPI_MANUAL),
-                CPPI_MANUAL[ports$portname], ports$portname)
-  ports$key <- normalise_name(key)
-  cppi$key <- normalise_name(cppi$cppi_name)
+  ports <- distinct(panel, portid, portname, ISO3, group)
+
+  ports$key <- ports$portname
+  needs_fix <- ports$portname %in% names(cppi_name_fixes)
+  ports$key[needs_fix] <- cppi_name_fixes[ports$portname[needs_fix]]
+  ports$key <- clean_name(ports$key)
+
+  cppi$key <- clean_name(cppi$cppi_name)
   cppi <- cppi[!duplicated(cppi$key), ]
-  out <- merge(ports, cppi[, c("key", "cppi_name", "cppi_rank")], by = "key", all.x = TRUE)
-  out[, c("portid", "portname", "ISO3", "group", "cppi_name", "cppi_rank")]
+
+  matched <- left_join(ports, cppi, by = "key")
+  select(matched, portid, portname, ISO3, group, cppi_name, cppi_rank)
 }
 
-# Did diverted traffic stop in South Africa? Does port efficiency matter?
+
 estimate_heterogeneity <- function(panel, cppi_match) {
-  d <- add_post(main_sample(panel))
-  d <- d[d$group %in% c("Cape route", "Control"), ]
-  d$post_cape_zaf <- d$post_cape * d$zaf
-  m1 <- fixest::feols(stats::as.formula(paste("log1p(calls) ~ post_cape + post_cape_zaf |", FE)),
-                      d, cluster = ~ISO3)
-  m2 <- fixest::feols(stats::as.formula(paste("log1p(calls_container) ~ post_cape + post_cape_zaf |", FE)),
-                      d, cluster = ~ISO3)
-  # Container ports ranked in the CPPI 2023 (standardised rank: + = less efficient)
-  dc <- merge(d, cppi_match[!is.na(cppi_match$cppi_rank), c("portid", "cppi_rank")], by = "portid")
-  dc$cppi_z <- as.numeric(scale(dc$cppi_rank))
-  dc$post_cppi <- dc$post * dc$cppi_z
-  dc$post_cape_cppi <- dc$post_cape * dc$cppi_z
-  m3 <- fixest::feols(stats::as.formula(paste(
-    "log1p(calls_container) ~ post_cape + post_cppi + post_cape_cppi |", FE)),
-    dc, cluster = ~ISO3)
-  # Robustness: without Port Elizabeth, the largest drop in the region.
-  m4 <- fixest::feols(stats::as.formula(paste("log1p(calls) ~ post_cape + post_cape_zaf |", FE)),
-                      d[d$portname != "Port Elizabeth", ], cluster = ~ISO3)
-  list("Calls" = m1, "Container" = m2, "Container (CPPI)" = m3,
-       "Excl. Port Elizabeth" = m4)
+
+  df <- add_post(main_sample(panel))
+  df <- filter(df, group %in% c("Cape route", "Control"))
+  df$post_cape_zaf <- df$post_cape * df$zaf
+
+  m_zaf <- feols(log1p(calls) ~ post_cape + post_cape_zaf | portid^woy + week,
+                 data = df, cluster = ~ISO3)
+
+  m_zaf_container <- feols(log1p(calls_container) ~ post_cape + post_cape_zaf | portid^woy + week,
+                           data = df, cluster = ~ISO3)
+
+  # standardised CPPI rank: higher = less efficient
+  ranked <- cppi_match |>
+    filter(!is.na(cppi_rank)) |>
+    select(portid, cppi_rank)
+  df_cppi <- inner_join(df, ranked, by = "portid")
+  df_cppi$cppi_z         <- as.numeric(scale(df_cppi$cppi_rank))
+  df_cppi$post_cppi      <- df_cppi$post * df_cppi$cppi_z
+  df_cppi$post_cape_cppi <- df_cppi$post_cape * df_cppi$cppi_z
+
+  m_cppi <- feols(log1p(calls_container) ~ post_cape + post_cppi + post_cape_cppi | portid^woy + week,
+                  data = df_cppi, cluster = ~ISO3)
+
+  df_no_pe <- filter(df, portname != "Port Elizabeth")
+  m_no_pe <- feols(log1p(calls) ~ post_cape + post_cape_zaf | portid^woy + week,
+                   data = df_no_pe, cluster = ~ISO3)
+
+  list("Calls"                = m_zaf,
+       "Container"            = m_zaf_container,
+       "Container (CPPI)"     = m_cppi,
+       "Excl. Port Elizabeth" = m_no_pe)
 }
 
-# Permutation inference: South Africa is a single country (a single cluster), so
-# the clustered standard error of post_cape_zaf is unreliable. We re-estimate the
-# model assigning South Africa's role to each Cape-route country in turn, and
-# locate the South African coefficient in that distribution.
+
+# South Africa is a single cluster, so its standard error is unreliable.
+# Rerun the model with each Cape-route country in South Africa's place.
 placebo_countries <- function(panel) {
-  d <- add_post(main_sample(panel))
-  d <- d[d$group %in% c("Cape route", "Control"), ]
-  countries <- sort(unique(d$ISO3[d$group == "Cape route"]))
-  coefs <- vapply(countries, function(c) {
-    d$post_cape_c <- d$post_cape * as.integer(d$ISO3 == c)
-    m <- fixest::feols(stats::as.formula(paste("log1p(calls) ~ post_cape + post_cape_c |", FE)),
-                       d, notes = FALSE)
-    stats::coef(m)[["post_cape_c"]]
-  }, numeric(1))
-  out <- data.frame(ISO3 = countries, coef = coefs)
-  out$rank <- rank(out$coef)
-  out
+
+  df <- add_post(main_sample(panel))
+  df <- filter(df, group %in% c("Cape route", "Control"))
+
+  countries <- sort(unique(df$ISO3[df$group == "Cape route"]))
+  coefs <- numeric(length(countries))
+
+  for (i in seq_along(countries)) {
+    df$post_cape_c <- df$post_cape * as.integer(df$ISO3 == countries[i])
+    m <- feols(log1p(calls) ~ post_cape + post_cape_c | portid^woy + week,
+               data = df, notes = FALSE)
+    coefs[i] <- coef(m)["post_cape_c"]
+  }
+
+  result <- data.frame(ISO3 = countries, coef = coefs)
+  result$rank <- rank(result$coef)
+  result
 }
 
-# Change by port, net of the average change in control ports (log x 100).
+
 port_changes <- function(panel, cppi_match) {
-  d <- main_sample(panel)
-  d <- d[d$week >= as.Date("2022-01-03"), ]
-  d$period <- ifelse(d$week >= SHOCK_DATE, "post", "pre")
-  agg <- d |>
-    dplyr::group_by(portid, portname, ISO3, group, period) |>
-    dplyr::summarise(calls = mean(calls), .groups = "drop") |>
-    tidyr::pivot_wider(names_from = period, values_from = calls) |>
-    dplyr::mutate(dlog = 100 * (log1p(post) - log1p(pre)))
-  ctrl <- mean(agg$dlog[agg$group == "Control"])
-  agg$dlog_net <- agg$dlog - ctrl
-  agg <- merge(agg, cppi_match[, c("portid", "cppi_rank")], by = "portid", all.x = TRUE)
-  attr(agg, "control_change") <- ctrl
-  agg
+
+  df <- main_sample(panel)
+  df <- filter(df, week >= as.Date("2022-01-03"))
+  df$period <- ifelse(df$week >= shock_date, "post", "pre")
+
+  by_port <- df |>
+    group_by(portid, portname, ISO3, group, period) |>
+    summarise(calls = mean(calls), .groups = "drop") |>
+    pivot_wider(names_from = period, values_from = calls) |>
+    mutate(dlog = 100 * (log1p(post) - log1p(pre)))
+
+  control_change <- mean(by_port$dlog[by_port$group == "Control"])
+  by_port$dlog_net <- by_port$dlog - control_change
+
+  by_port <- left_join(by_port, select(cppi_match, portid, cppi_rank), by = "portid")
+  attr(by_port, "control_change") <- control_change
+  by_port
 }
 
-# Suez Canal revenue reconstructed from PortWatch transits.
+
+# revenue 2024 = revenue 2023 x (traffic 2024 / traffic 2023)
 suez_revenue <- function(choke_file, revenue_file) {
-  ch <- utils::read.csv(choke_file)
-  ch$date <- as.Date(ch$date)
-  s <- ch[ch$portname == "Suez Canal", ]
-  s$year <- as.integer(format(s$date, "%Y"))
-  yr <- stats::aggregate(cbind(n_total, capacity) ~ year, data = s[s$year %in% 2023:2024, ], FUN = sum)
-  rev <- utils::read.csv(revenue_file)
-  r23 <- rev$revenue_bn_usd[rev$year == 2023]
+
+  suez <- read.csv(choke_file) |>
+    filter(portname == "Suez Canal") |>
+    mutate(year = as.integer(substr(date, 1, 4))) |>
+    filter(year %in% c(2023, 2024)) |>
+    group_by(year) |>
+    summarise(transits = sum(n_total), capacity = sum(capacity))
+
+  revenue <- read.csv(revenue_file)
+  rev_2023 <- revenue$revenue_bn_usd[revenue$year == 2023]
+  rev_2024 <- revenue$revenue_bn_usd[revenue$year == 2024]
+
+  transits_ratio <- suez$transits[suez$year == 2024] / suez$transits[suez$year == 2023]
+  capacity_ratio <- suez$capacity[suez$year == 2024] / suez$capacity[suez$year == 2023]
+
   data.frame(
-    year = 2024,
-    actual = rev$revenue_bn_usd[rev$year == 2024],
-    pred_count = r23 * yr$n_total[yr$year == 2024] / yr$n_total[yr$year == 2023],
-    pred_capacity = r23 * yr$capacity[yr$year == 2024] / yr$capacity[yr$year == 2023],
-    transits_change = yr$n_total[yr$year == 2024] / yr$n_total[yr$year == 2023] - 1,
-    capacity_change = yr$capacity[yr$year == 2024] / yr$capacity[yr$year == 2023] - 1,
-    revenue_2023 = r23
+    year            = 2024,
+    actual          = rev_2024,
+    pred_count      = rev_2023 * transits_ratio,
+    pred_capacity   = rev_2023 * capacity_ratio,
+    transits_change = transits_ratio - 1,
+    capacity_change = capacity_ratio - 1,
+    revenue_2023    = rev_2023
   )
 }

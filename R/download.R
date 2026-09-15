@@ -1,95 +1,118 @@
-# Download IMF PortWatch data (public ArcGIS API, no key required).
-# Each function writes a CSV to data/raw/ and does not download again if the
-# file already exists: delete the file to force an update.
+# IMF PortWatch downloads (public ArcGIS API)
 
-PW_BASE <- "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services"
+portwatch_url <- "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services"
 
-# ArcGIS query with pagination (resultOffset) and retries.
-pw_query <- function(service, params, page_size = 1000) {
-  url <- sprintf("%s/%s/FeatureServer/0/query", PW_BASE, service)
-  out <- list()
+
+query_portwatch <- function(dataset, params, page_size = 1000) {
+
+  url <- paste0(portwatch_url, "/", dataset, "/FeatureServer/0/query")
+  all_pages <- list()
   offset <- 0
+
   repeat {
-    p <- c(params, f = "json", resultOffset = offset, resultRecordCount = page_size)
-    qs <- paste(names(p), vapply(p, function(v) utils::URLencode(as.character(v), reserved = TRUE), ""),
-                sep = "=", collapse = "&")
-    res <- NULL
+    params_page <- c(params, f = "json",
+                     resultOffset = offset, resultRecordCount = page_size)
+    values <- sapply(params_page, function(v) URLencode(as.character(v), reserved = TRUE))
+    query_string <- paste(names(params_page), values, sep = "=", collapse = "&")
+
+    answer <- NULL
     for (attempt in 1:5) {
-      res <- tryCatch(jsonlite::fromJSON(paste0(url, "?", qs)), error = function(e) NULL)
-      if (!is.null(res) && is.null(res$error)) break
+      answer <- tryCatch(fromJSON(paste0(url, "?", query_string)),
+                         error = function(e) NULL)
+      if (!is.null(answer) && is.null(answer$error)) break
       Sys.sleep(2 * attempt)
     }
-    if (is.null(res) || !is.null(res$error)) stop("PortWatch query failed: ", service)
-    page <- res$features$attributes
-    if (is.null(page) || nrow(page) == 0) break
-    out[[length(out) + 1]] <- page
-    if (!isTRUE(res$exceededTransferLimit)) break
-    offset <- offset + nrow(page)
+    if (is.null(answer) || !is.null(answer$error)) {
+      stop("PortWatch query failed: ", dataset)
+    }
+
+    rows <- answer$features$attributes
+    if (is.null(rows) || nrow(rows) == 0) break
+
+    all_pages[[length(all_pages) + 1]] <- rows
+
+    if (!isTRUE(answer$exceededTransferLimit)) break
+    offset <- offset + nrow(rows)
   }
-  do.call(rbind, out)
+
+  do.call(rbind, all_pages)
 }
 
-# Daily transits by chokepoint (full available period).
+
 download_chokepoints <- function(file = "data/raw/portwatch_chokepoints.csv") {
-  if (!file.exists(file)) {
-    x <- pw_query("Daily_Chokepoints_Data",
-                  c(where = "1=1",
-                    outFields = "date,portid,portname,n_total,n_container,n_tanker,n_dry_bulk,capacity,capacity_container",
-                    orderByFields = "ObjectId"),
-                  page_size = 10000)
-    x$date <- as.Date(x$date)
-    utils::write.csv(x[order(x$portname, x$date), ], file, row.names = FALSE)
-  }
-  file
-}
-
-# Port table: coordinates, country, continent.
-download_ports_meta <- function(file = "data/raw/portwatch_ports.csv") {
-  if (!file.exists(file)) {
-    x <- pw_query("PortWatch_ports_database",
-                  c(where = "1=1",
-                    outFields = "portid,portname,country,ISO3,continent,lat,lon,vessel_count_total,LOCODE",
-                    orderByFields = "portid"))
-    utils::write.csv(x, file, row.names = FALSE)
-  }
-  file
-}
-
-# Weekly port calls by port, aggregated server-side (the daily table has ~6
-# million rows). Weeks run Monday to Sunday. One cache file per week in
-# data/raw/ports_weekly/, so an interrupted download can resume.
-download_ports_weekly <- function(file = "data/raw/portwatch_ports_weekly.csv",
-                                  start = as.Date("2019-01-07"),
-                                  end = as.Date("2024-12-30")) {
   if (file.exists(file)) return(file)
-  cache <- file.path(dirname(file), "ports_weekly")
-  dir.create(cache, recursive = TRUE, showWarnings = FALSE)
-  vars <- c(calls = "portcalls", calls_container = "portcalls_container",
-            calls_tanker = "portcalls_tanker", calls_dry_bulk = "portcalls_dry_bulk",
-            import = "import", export = "export")
-  stats <- jsonlite::toJSON(c(
-    lapply(names(vars), function(k) list(statisticType = "sum",
-                                         onStatisticField = vars[[k]],
-                                         outStatisticFieldName = k)),
-    list(list(statisticType = "count", onStatisticField = "portcalls",
-              outStatisticFieldName = "ndays"))
-  ), auto_unbox = TRUE)
 
-  weeks <- seq(start, end, by = "week")
+  choke <- query_portwatch(
+    "Daily_Chokepoints_Data",
+    c(where = "1=1",
+      outFields = "date,portid,portname,n_total,n_container,n_tanker,n_dry_bulk,capacity,capacity_container",
+      orderByFields = "ObjectId"),
+    page_size = 10000
+  )
+  choke$date <- as.Date(choke$date)
+  choke <- choke[order(choke$portname, choke$date), ]
+  write.csv(choke, file, row.names = FALSE)
+  file
+}
+
+
+download_ports <- function(file = "data/raw/portwatch_ports.csv") {
+  if (file.exists(file)) return(file)
+
+  ports <- query_portwatch(
+    "PortWatch_ports_database",
+    c(where = "1=1",
+      outFields = "portid,portname,country,ISO3,continent,lat,lon,vessel_count_total,LOCODE",
+      orderByFields = "portid")
+  )
+  write.csv(ports, file, row.names = FALSE)
+  file
+}
+
+
+# The daily table is ~6 million rows, so the server sums each week for us.
+# One file per week in data/raw/ports_weekly/ so the download can resume.
+download_ports_weekly <- function(file = "data/raw/portwatch_ports_weekly.csv",
+                                  first_week = as.Date("2019-01-07"),
+                                  last_week = as.Date("2024-12-30")) {
+  if (file.exists(file)) return(file)
+
+  week_folder <- file.path(dirname(file), "ports_weekly")
+  dir.create(week_folder, recursive = TRUE, showWarnings = FALSE)
+
+  sums <- list(
+    list(statisticType = "sum", onStatisticField = "portcalls",           outStatisticFieldName = "calls"),
+    list(statisticType = "sum", onStatisticField = "portcalls_container", outStatisticFieldName = "calls_container"),
+    list(statisticType = "sum", onStatisticField = "portcalls_tanker",    outStatisticFieldName = "calls_tanker"),
+    list(statisticType = "sum", onStatisticField = "portcalls_dry_bulk",  outStatisticFieldName = "calls_dry_bulk"),
+    list(statisticType = "sum", onStatisticField = "import",              outStatisticFieldName = "import"),
+    list(statisticType = "sum", onStatisticField = "export",              outStatisticFieldName = "export"),
+    list(statisticType = "count", onStatisticField = "portcalls",         outStatisticFieldName = "ndays")
+  )
+  sums_json <- as.character(toJSON(sums, auto_unbox = TRUE))
+
+  weeks <- seq(first_week, last_week, by = "week")
+
   for (i in seq_along(weeks)) {
-    w <- weeks[i]
-    f <- file.path(cache, paste0(w, ".csv"))
-    if (file.exists(f)) next
-    x <- pw_query("Daily_Ports_Data",
-                  c(where = sprintf("date >= DATE '%s' AND date < DATE '%s'", w, w + 7),
-                    groupByFieldsForStatistics = "portid",
-                    outStatistics = as.character(stats),
-                    orderByFields = "portid"))
-    x$week <- w
-    utils::write.csv(x, f, row.names = FALSE)
+    monday <- weeks[i]
+    week_file <- file.path(week_folder, paste0(monday, ".csv"))
+    if (file.exists(week_file)) next
+
+    one_week <- query_portwatch(
+      "Daily_Ports_Data",
+      c(where = paste0("date >= DATE '", monday, "' AND date < DATE '", monday + 7, "'"),
+        groupByFieldsForStatistics = "portid",
+        outStatistics = sums_json,
+        orderByFields = "portid")
+    )
+    one_week$week <- monday
+    write.csv(one_week, week_file, row.names = FALSE)
+
     if (i %% 25 == 0) message("PortWatch: ", i, "/", length(weeks), " weeks")
   }
-  all <- do.call(rbind, lapply(file.path(cache, paste0(weeks, ".csv")), utils::read.csv))
-  utils::write.csv(all, file, row.names = FALSE)
+
+  week_files <- file.path(week_folder, paste0(weeks, ".csv"))
+  all_weeks <- do.call(rbind, lapply(week_files, read.csv))
+  write.csv(all_weeks, file, row.names = FALSE)
   file
 }
