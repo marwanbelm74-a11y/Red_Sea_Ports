@@ -1,4 +1,4 @@
-# The Red Sea Crisis and Emerging-Market Ports
+# The Red Sea Crisis and Emerging-Market ports
 
 Who won and who lost among emerging-market ports when carriers abandoned the
 Red Sea for the Cape of Good Hope (December 2023)? And did port efficiency
