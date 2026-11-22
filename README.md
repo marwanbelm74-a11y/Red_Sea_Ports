@@ -18,8 +18,8 @@ renv::restore()
 targets::tar_make()   # about 1 hour the first time (PortWatch download), then a few seconds
 ```
 
-The PDF is written to `paper/main.pdf`. Numbers in the text come from
-`output/tables/numbers.tex`, regenerated on every run.
+Figures and tables are written to `output/figures/` and `output/tables/`.
+The paper will be added later.
 
 ## Data
 
@@ -45,7 +45,7 @@ To update the PortWatch data, delete the files in `data/raw/` (and the
 - **Specification**: port × week-of-year and week fixed effects; standard errors
   clustered by country. Few countries in the treated groups: interpret p-values
   with caution.
-- **CPPI**: name matching in `R/models.R` (`CPPI_MANUAL`). The list of matches
+- **CPPI**: name matching in `R/models.R` (`cppi_name_fixes`). The list of matches
   is exported to `output/tables/cppi_match.csv`: check it.
 
 ## Layout
@@ -56,5 +56,4 @@ To update the PortWatch data, delete the files in `data/raw/` (and the
 | `R/cppi.R` | CPPI ranking extracted from the PDF |
 | `R/data.R` | Groups, port × week panel |
 | `R/models.R` | Event study, DiD, heterogeneity, Suez |
-| `R/outputs.R` | Figures, LaTeX tables, numbers for the text |
-| `paper/main.tex` | The paper |
+| `R/outputs.R` | Figures and LaTeX tables |

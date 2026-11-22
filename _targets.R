@@ -56,10 +56,12 @@ list(
     out
   }, format = "file"),
 
-  # paper
-  tar_target(paper_sources, c("paper/main.tex", "paper/references.bib"), format = "file"),
-  tar_target(paper,
-             compile_paper(paper_sources, fig_chokepoints, fig_event, fig_ports,
-                           tab_groups, tab_did, tab_het, tab_suez, numbers),
-             format = "file")
+  # paper (only if paper/ exists)
+  if (file.exists("paper/main.tex")) list(
+    tar_target(paper_sources, c("paper/main.tex", "paper/references.bib"), format = "file"),
+    tar_target(paper,
+               compile_paper(paper_sources, fig_chokepoints, fig_event, fig_ports,
+                             tab_groups, tab_did, tab_het, tab_suez, numbers),
+               format = "file")
+  )
 )
